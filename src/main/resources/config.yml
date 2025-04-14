@@ -1,0 +1,6 @@
+disable-vanilla-totem: false
+item-effects:
+  count: 8
+  duration: 10
+  spread: 0.75
+  vertical: 0.5

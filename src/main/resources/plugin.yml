@@ -1,0 +1,7 @@
+name: JustDontDie
+version: '${project.version}'
+softdepend:
+  - NyatLib
+main: icu.nyat.kusunoki.justDontDie.JustDontDie
+api-version: ''
+authors: [ Shiroiame_Kusu ]
