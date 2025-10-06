@@ -3,35 +3,64 @@ package icu.nyat.kusunoki.justDontDie.Events;
 import icu.nyat.kusunoki.justDontDie.JustDontDie;
 import org.bukkit.*;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Item;
-import org.bukkit.util.Vector;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityResurrectEvent;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+
 public class PlayerDeathListener implements Listener {
     private final JustDontDie plugin;
+    // 简单的冷却，避免同一死亡事件被多次触发
+    private final Map<UUID, Long> recentUseMillis = new HashMap<>();
 
     public PlayerDeathListener(JustDontDie plugin) {
         this.plugin = plugin;
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPlayerDamage(EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Player)) return;
 
         Player player = (Player) event.getEntity();
+        // 仅在生存/冒险模式下生效
+        GameMode gm = player.getGameMode();
+        if (gm == GameMode.CREATIVE || gm == GameMode.SPECTATOR) return;
+
         if (player.getHealth() - event.getFinalDamage() > 0) return;
 
-        ItemStack handItem = player.getInventory().getItemInMainHand();
-        if (handItem == null || handItem.getType() == Material.AIR) return;
+        // 简单的 500ms 冷却，避免同一 tick 多次触发
+        long now = System.currentTimeMillis();
+        long last = recentUseMillis.getOrDefault(player.getUniqueId(), 0L);
+        if (now - last < 500) return;
 
-        handleRevival(player, event);
+        // 优先使用主手物品，其次副手
+        EquipmentSlot slotToUse = null;
+        ItemStack itemToUse = null;
+        ItemStack main = player.getInventory().getItemInMainHand();
+        if (main.getType() != Material.AIR) {
+            slotToUse = EquipmentSlot.HAND;
+            itemToUse = main.clone();
+        } else {
+            ItemStack off = player.getInventory().getItemInOffHand();
+            if (off.getType() != Material.AIR) {
+                slotToUse = EquipmentSlot.OFF_HAND;
+                itemToUse = off.clone();
+            }
+        }
+        if (slotToUse == null) return; // 手上都没拿东西
+
+        recentUseMillis.put(player.getUniqueId(), now);
+        handleRevival(player, event, slotToUse, itemToUse);
     }
 
     @EventHandler
@@ -42,50 +71,56 @@ public class PlayerDeathListener implements Listener {
         }
     }
 
-    private void spawnFlyingItems(Player player) {
-        Location loc = player.getLocation();
-        World world = player.getWorld();
-        ItemStack totemItem = new ItemStack(Material.TOTEM_OF_UNDYING);
-
-        for (int i = 0; i < 8; i++) {
-            Item item = world.dropItem(loc.clone().add(0, 1, 0), totemItem);
-            item.setPickupDelay(Integer.MAX_VALUE); // 防止被捡起
-            item.setInvulnerable(true); // 防止被破坏
-
-            // 设置随机运动方向
-            double x = (Math.random() - 0.5) * 0.75;
-            double y = Math.random() * 0.5 + 0.5;
-            double z = (Math.random() - 0.5) * 0.75;
-            item.setVelocity(new Vector(x, y, z));
-
-            // 10 ticks后移除物品（0.5秒）
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                if (item.isValid()) {
-                    item.remove();
-                    // 添加消失粒子效果
-                    world.spawnParticle(Particle.CLOUD, item.getLocation(), 5, 0, 0, 0, 0.1);
-                }
-            }, 10);
+    private void showItemTotemAnimation(Player player, ItemStack itemForAnimation) {
+        // 如果在 Paper 上运行，尝试调用 Player#showTotem(ItemStack) 来显示任意物品的复活动画
+        try {
+            player.getClass().getMethod("showTotem", ItemStack.class).invoke(player, itemForAnimation);
+            return;
+        } catch (Throwable ignored) {
+            // 非 Paper 或方法不可用，走降级方案
         }
-    }
-
-    private void handleRevival(Player player, EntityDamageEvent event) {
-        event.setCancelled(true);
-        player.setHealth(1);
-
-        // 药水效果
-        player.addPotionEffect(new PotionEffect(
-                PotionEffectType.REGENERATION, 5*20, 1));
-        player.addPotionEffect(new PotionEffect(
-                PotionEffectType.ABSORPTION, 40*20, 1));
-
-        // 特效
+        // 降级：播放声音 + 粒子，尽量还原动画体验
         player.spawnParticle(Particle.TOTEM_OF_UNDYING, player.getLocation(), 100, 0.5, 0.5, 0.5, 0.1);
         player.playSound(player.getLocation(), Sound.ITEM_TOTEM_USE, 1.0F, 1.0F);
+    }
 
-        // 消耗物品
-        ItemStack handItem = player.getInventory().getItemInMainHand();
-        handItem.setAmount(handItem.getAmount() - 1);
-        spawnFlyingItems(player);
+    private void handleRevival(Player player, EntityDamageEvent event, EquipmentSlot slotUsed, ItemStack usedItemSnapshot) {
+        event.setCancelled(true);
+
+        // 设置生命值为 1（半颗心）
+        player.setHealth(1.0);
+
+        // 尽量贴近原版：再生 II 5s、伤害吸收 II 5s、抗火 40s
+        player.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION, 5 * 20, 1));
+        player.addPotionEffect(new PotionEffect(PotionEffectType.ABSORPTION, 5 * 20, 1));
+        player.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, 40 * 20, 0));
+
+        // 自定义/原版动画
+        showItemTotemAnimation(player, usedItemSnapshot);
+
+        // 消耗手中物品（按使用的手）
+        if (slotUsed == EquipmentSlot.HAND) {
+            ItemStack hand = player.getInventory().getItemInMainHand();
+            if (hand.getType() != Material.AIR) {
+                int newAmount = hand.getAmount() - 1;
+                if (newAmount <= 0) {
+                    player.getInventory().setItemInMainHand(new ItemStack(Material.AIR));
+                } else {
+                    hand.setAmount(newAmount);
+                    player.getInventory().setItemInMainHand(hand);
+                }
+            }
+        } else if (slotUsed == EquipmentSlot.OFF_HAND) {
+            ItemStack off = player.getInventory().getItemInOffHand();
+            if (off.getType() != Material.AIR) {
+                int newAmount = off.getAmount() - 1;
+                if (newAmount <= 0) {
+                    player.getInventory().setItemInOffHand(new ItemStack(Material.AIR));
+                } else {
+                    off.setAmount(newAmount);
+                    player.getInventory().setItemInOffHand(off);
+                }
+            }
+        }
     }
 }

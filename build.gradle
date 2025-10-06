@@ -1,0 +1,42 @@
+plugins {
+    id 'java'
+}
+
+group = 'icu.nyat.kusunoki'
+version = '0.1.0-Alpha.1'
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url = uri('https://hub.spigotmc.org/nexus/content/repositories/snapshots/') }
+    maven { url = uri('https://oss.sonatype.org/content/groups/public/') }
+}
+
+dependencies {
+    compileOnly 'org.spigotmc:spigot-api:1.21.4-R0.1-SNAPSHOT'
+}
+
+processResources {
+    filteringCharset = 'UTF-8'
+    // Expand variables like ${version} in plugin.yml
+    filesMatching('plugin.yml') {
+        expand(
+            'version': project.version
+        )
+    }
+}
+
+jar {
+    archiveBaseName.set('JustDontDie')
+    destinationDirectory.set(file("${projectDir}/target"))
+}
